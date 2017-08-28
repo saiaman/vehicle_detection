@@ -13,6 +13,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from scipy.ndimage.measurements import label
 
+
 def get_hog_features(img, orient, pix_per_cell, cell_per_block, vis=False, feature_vec=True):
     # Define a function to return HOG features and visualization
     # Call with two outputs if vis==True
@@ -152,7 +153,7 @@ def generate_heat_map(map_size, bbox_list, prob_list):
         if p > 0.5:
             heatmap[box[0][1]:box[1][1], box[0][0]:box[1][0]] += 1
         y = probmap[box[0][1]:box[1][1], box[0][0]:box[1][0]]
-        y[y<p]=p
+        y[y < p] = p
     # Return updated heatmap
     return heatmap, probmap
 
@@ -166,31 +167,33 @@ def apply_threshold(heatmap, threshold):
 
 def draw_labeled_bboxes(img, labels, probmap):
     # Iterate through all detected cars
-    color= (100,100, 250)
+    color = (100, 100, 250)
     for car_number in range(1, labels[1] + 1):
         # Find pixels with each car_number label value
         nonzero = (labels[0] == car_number).nonzero()
         prob = probmap[labels[0] == car_number].mean()
         # Identify x and y values of those pixels
-        nonzeroy = np.array(nonzero[0])
-        nonzerox = np.array(nonzero[1])
-        # Define a bounding box based on min/max x and y
-        bbox = ((np.min(nonzerox), np.min(nonzeroy)),
-                (np.max(nonzerox), np.max(nonzeroy)))
-        # Draw the box on the image
-        cv2.rectangle(img, bbox[0], bbox[1], color, 6)
-        fill_rec = np.array([[bbox[0][0], bbox[0][1]],
-                [bbox[0][0]+150, bbox[0][1]],
-                [bbox[0][0]+150, bbox[0][1]-30],
-                [bbox[0][0], bbox[0][1]-30]])
-        cv2.fillConvexPoly(img, fill_rec, color)
+        if prob>0.85:
+            nonzeroy = np.array(nonzero[0])
+            nonzerox = np.array(nonzero[1])
+            # Define a bounding box based on min/max x and y
+            bbox = ((np.min(nonzerox), np.min(nonzeroy)),
+                    (np.max(nonzerox), np.max(nonzeroy)))
+            # Draw the box on the image
+            cv2.rectangle(img, bbox[0], bbox[1], color, 6)
+            fill_rec = np.array([[bbox[0][0], bbox[0][1]],
+                                 [bbox[0][0] + 150, bbox[0][1]],
+                                 [bbox[0][0] + 150, bbox[0][1] - 30],
+                                 [bbox[0][0], bbox[0][1] - 30]])
+            cv2.fillConvexPoly(img, fill_rec, color)
 
-        cv2.putText(img,'car{:2.1f}%'.format(prob*100), (bbox[0][0], bbox[0][1]-5), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), thickness=2)
+            cv2.putText(img, 'car{:2.1f}%'.format(
+                prob * 100), (bbox[0][0], bbox[0][1] - 5), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), thickness=2)
     # Return the image
     return img
 
 
-def car_detection_single_scale(img, ystart, ystop, scale, clf, X_scaler):
+def car_search_single_scale(img, ystart, ystop, scale, clf, X_scaler):
 
     # draw_img = np.copy(img)
     img = img.astype(np.float32) / 255
@@ -202,6 +205,7 @@ def car_detection_single_scale(img, ystart, ystop, scale, clf, X_scaler):
 
     box_list = []
     prob_list = []
+    features = []
     img_tosearch = img[ystart:ystop, :, :]
 
     ctrans_tosearch = cv2.cvtColor(img_tosearch, cv2.COLOR_RGB2HSV)
@@ -259,31 +263,94 @@ def car_detection_single_scale(img, ystart, ystop, scale, clf, X_scaler):
                 subimg, nbins=hist_bins, bins_range=(0, 1))
 
             # Scale features and make a prediction
-            test_features = X_scaler.transform(
+            features.append(
                 np.hstack((hist_features, spatial_features, hog_features)).reshape(1, -1))
-            test_prediction = clf.predict_proba(test_features)
+            # test_features = X_scaler.transform(
+            #     np.hstack((hist_features, spatial_features, hog_features)).reshape(1, -1))
+            # test_prediction = clf.predict_proba(test_features)
 
             xbox_left = np.int(xleft * scale)
             ytop_draw = np.int(ytop * scale)
             win_draw = np.int(window * scale)
             box_list.append(((xbox_left, ytop_draw + ystart), (xbox_left +
                                                                win_draw, ytop_draw + win_draw + ystart)))
-            prob_list.append(test_prediction[0][1])
+            # prob_list.append(test_prediction[0][1])
+    features = np.vstack(features)
+    features = X_scaler.transform(features)
+    prob_list = clf.predict_proba(features)[:, 1].ravel().tolist()
     return box_list, prob_list
 
 
-def car_detection_multi_scale(img, ystart, ystop, scales, clf, X_scaler):
+def car_search_multi_scale(img, ystart, ystop, scales, clf, X_scaler):
     bbox_list = []
     prob_list = []
     for scale in scales:
-        bbox, prob = car_detection_single_scale(
+        bbox, prob = car_search_single_scale(
             img, ystart, ystop, scale, clf, X_scaler)
         bbox_list = bbox_list + bbox
         prob_list = prob_list + prob
     img_size = (img.shape[0], img.shape[1])
     heatmap, probmap = generate_heat_map(img_size, bbox_list, prob_list)
-    heatmap = apply_threshold(heatmap,5.0)
+    return heatmap, probmap
+
+
+def car_labeling_single_img(img, ystart, ystop, scales, clf, X_scaler):
+    heatmap, probmap = car_search_multi_scale(
+        img, ystart, ystop, scales, clf, X_scaler)
+    heatmap = apply_threshold(heatmap, 1.0)
     imcopy = np.copy(img)
     labels = label(heatmap)
     draw_labeled_bboxes(imcopy, labels, probmap)
     return imcopy
+
+
+class car_tracker(object):
+    """
+    class for tracking driving lanes in video
+    """
+
+    def __init__(self, video=0):
+        self.frame_ct = 0
+        self.detected = False
+        self.search_scales = [0.75, 1.0, 1.5, 2.0]
+        self.decay_factor = 0.3
+        self.heatmap_thresh = 1.0
+        self.recent_heatmap = []
+        self.recent_probmap = []
+        self.current_heatmap = None
+        self.current_probmap = None
+        self.img_shape = []
+        self.ystart = 360
+        self.ystop = 720
+        self.clf, self.X_scaler = vehicle_classifier()
+        self.antn_img = []
+
+    def detect_car_from_img(self, img):
+        """
+        apply the pipeline to find driving lanes in each frame
+        """
+        self.frame_ct += 1
+
+        self.current_heatmap, self.current_probmap = car_search_multi_scale(
+            img, self.ystart, self.ystop, self.search_scales, self.clf, self.X_scaler)
+
+        self.update_history()  # update lane parameters
+        # save the annotated images
+        heatmap = apply_threshold(self.current_heatmap, self.heatmap_thresh)
+        labels = label(heatmap)
+        imcopy = np.copy(img)
+        draw_labeled_bboxes(imcopy, labels, self.current_probmap)
+        self.antn_img.append(imcopy)
+
+    def update_history(self):
+        if self.detected == False:
+            self.recent_heatmap.append(np.copy(self.current_heatmap))
+            self.recent_probmap.append(np.copy(self.current_probmap))
+            self.detected = True
+        else:
+            self.current_heatmap = self.decay_factor * self.current_heatmap + \
+                (1 - self.decay_factor) * self.recent_heatmap[-1]
+            self.current_probmap = self.decay_factor * self.current_probmap + \
+                (1 - self.decay_factor) * self.recent_probmap[-1]
+            self.recent_heatmap.append(np.copy(self.current_heatmap))
+            self.recent_probmap.append(np.copy(self.current_probmap))
