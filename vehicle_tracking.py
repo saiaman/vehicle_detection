@@ -61,19 +61,18 @@ def extract_feature(img):
     cell_per_block = 2
     img = img.astype(np.float32)  # png file has value between 0 and 1
     feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    feature_image_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
     hog_features = []
     for channel in range(feature_image.shape[2]):
         hog_features.append(get_hog_features(feature_image[:, :, channel],
                                              orient, pix_per_cell, cell_per_block,
                                              vis=False, feature_vec=True))
+    hog_features.append(get_hog_features(feature_image_gray,
+                                         orient, pix_per_cell, cell_per_block,
+                                         vis=False, feature_vec=True))
     hog_features = np.ravel(hog_features)
-    hog_features_ = []
-    for channel in range(feature_image.shape[2]):
-        hog_features_.append(get_hog_features(feature_image[:, :, channel],
-                                              orient, pix_per_cell * 2, cell_per_block,
-                                              vis=False, feature_vec=True))
-    hog_features_ = np.ravel(hog_features_)
+
 
     # # Append the new feature vector to the features list
     hist_features = color_hist(feature_image, nbins=32, bins_range=(0, 1))
@@ -173,7 +172,7 @@ def draw_labeled_bboxes(img, labels, probmap):
         nonzero = (labels[0] == car_number).nonzero()
         prob = probmap[labels[0] == car_number].mean()
         # Identify x and y values of those pixels
-        if prob>0.85:
+        if prob>0.9:
             nonzeroy = np.array(nonzero[0])
             nonzerox = np.array(nonzero[1])
             # Define a bounding box based on min/max x and y
@@ -209,14 +208,18 @@ def car_search_single_scale(img, ystart, ystop, scale, clf, X_scaler):
     img_tosearch = img[ystart:ystop, :, :]
 
     ctrans_tosearch = cv2.cvtColor(img_tosearch, cv2.COLOR_RGB2HSV)
+    ctrans_tosearch_gray = cv2.cvtColor(img_tosearch, cv2.COLOR_RGB2GRAY)
     if scale != 1:
         imshape = ctrans_tosearch.shape
         ctrans_tosearch = cv2.resize(ctrans_tosearch, (np.int(
+            imshape[1] / scale), np.int(imshape[0] / scale)))
+        ctrans_tosearch_gray = cv2.resize(ctrans_tosearch_gray, (np.int(
             imshape[1] / scale), np.int(imshape[0] / scale)))
 
     ch1 = ctrans_tosearch[:, :, 0]
     ch2 = ctrans_tosearch[:, :, 1]
     ch3 = ctrans_tosearch[:, :, 2]
+    ch4 = ctrans_tosearch_gray
     # Define blocks and steps as above
     nxblocks = (ch1.shape[1] // pix_per_cell) - cell_per_block + 1
     nyblocks = (ch1.shape[0] // pix_per_cell) - cell_per_block + 1
@@ -236,6 +239,9 @@ def car_search_single_scale(img, ystart, ystop, scale, clf, X_scaler):
                             cell_per_block, feature_vec=False)
     hog3 = get_hog_features(ch3, orient, pix_per_cell,
                             cell_per_block, feature_vec=False)
+    hog4 = get_hog_features(ch4, orient, pix_per_cell,
+                            cell_per_block, feature_vec=False)
+
 
     for xb in range(nxsteps):
         for yb in range(nysteps):
@@ -248,7 +254,9 @@ def car_search_single_scale(img, ystart, ystop, scale, clf, X_scaler):
                              xpos:xpos + nblocks_per_window].ravel()
             hog_feat3 = hog3[ypos:ypos + nblocks_per_window,
                              xpos:xpos + nblocks_per_window].ravel()
-            hog_features = np.hstack((hog_feat1, hog_feat2, hog_feat3))
+            hog_feat4 = hog4[ypos:ypos + nblocks_per_window,
+                             xpos:xpos + nblocks_per_window].ravel()
+            hog_features = np.hstack((hog_feat1, hog_feat2, hog_feat3, hog_feat4))
 
             xleft = xpos * pix_per_cell
             ytop = ypos * pix_per_cell
@@ -265,16 +273,12 @@ def car_search_single_scale(img, ystart, ystop, scale, clf, X_scaler):
             # Scale features and make a prediction
             features.append(
                 np.hstack((hist_features, spatial_features, hog_features)).reshape(1, -1))
-            # test_features = X_scaler.transform(
-            #     np.hstack((hist_features, spatial_features, hog_features)).reshape(1, -1))
-            # test_prediction = clf.predict_proba(test_features)
 
             xbox_left = np.int(xleft * scale)
             ytop_draw = np.int(ytop * scale)
             win_draw = np.int(window * scale)
             box_list.append(((xbox_left, ytop_draw + ystart), (xbox_left +
                                                                win_draw, ytop_draw + win_draw + ystart)))
-            # prob_list.append(test_prediction[0][1])
     features = np.vstack(features)
     features = X_scaler.transform(features)
     prob_list = clf.predict_proba(features)[:, 1].ravel().tolist()
@@ -313,7 +317,7 @@ class car_tracker(object):
         self.frame_ct = 0
         self.detected = False
         self.search_scales = [0.75, 1.0, 1.5, 2.0]
-        self.decay_factor = 0.3
+        self.decay_factor = 0.2
         self.heatmap_thresh = 1.0
         self.recent_heatmap = []
         self.recent_probmap = []
