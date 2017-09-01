@@ -12,16 +12,17 @@ from skimage.feature import hog
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from scipy.ndimage.measurements import label
-
+from tqdm import tqdm
+from moviepy.editor import VideoFileClip, ImageSequenceClip
 
 def get_hog_features(img, orient, pix_per_cell, cell_per_block, vis=False, feature_vec=True):
-    # Define a function to return HOG features and visualization
-    # Call with two outputs if vis==True
+    """
+    Extract HOG features using skimage
+    """
     if vis == True:
         features, hog_image = hog(img, orientations=orient, pixels_per_cell=(pix_per_cell, pix_per_cell),
-                                  cells_per_block=(
-                                      cell_per_block, cell_per_block), transform_sqrt=True,
-                                  visualise=vis, feature_vector=feature_vec)
+                       cells_per_block=(cell_per_block, cell_per_block),
+                       visualise=vis, feature_vector=feature_vec, block_norm='L2', transform_sqrt=True)
         return features, hog_image
     # Otherwise call with one output
     else:
@@ -32,7 +33,9 @@ def get_hog_features(img, orient, pix_per_cell, cell_per_block, vis=False, featu
 
 
 def color_hist(img, nbins=32, bins_range=(0, 256)):
-    # Compute the histogram of the color channels separately
+    """
+    extract the color histogram
+    """
     channel1_hist = np.histogram(img[:, :, 0], bins=nbins, range=bins_range)
     channel2_hist = np.histogram(img[:, :, 1], bins=nbins, range=bins_range)
     channel3_hist = np.histogram(img[:, :, 2], bins=nbins, range=bins_range)
@@ -44,6 +47,9 @@ def color_hist(img, nbins=32, bins_range=(0, 256)):
 
 
 def bin_spatial(img, size=(32, 32)):
+    """
+    extract spatial feature
+    """
     # Use cv2.resize().ravel() to create the feature vector
     features = cv2.resize(img, size).ravel()
     # Return the feature vector
@@ -52,8 +58,8 @@ def bin_spatial(img, size=(32, 32)):
 
 def extract_feature(img):
     """
-    return feature from one img
-    img in RGB format
+    return feature from one traning/test img
+    img in RGB format, assuming channel values between 0 and 1
     """
 
     orient = 12
@@ -73,16 +79,39 @@ def extract_feature(img):
                                          vis=False, feature_vec=True))
     hog_features = np.ravel(hog_features)
 
-
-    # # Append the new feature vector to the features list
     hist_features = color_hist(feature_image, nbins=32, bins_range=(0, 1))
     spatial_features = bin_spatial(feature_image, size=(16, 16))
     features = np.concatenate((hist_features, spatial_features, hog_features))
-    # Return list of feature vectors
     return features
 
 
+def extract_feature_vis(img):
+    """
+    return feature from one traning/test img
+    img in RGB format, assuming channel values between 0 and 1
+    """
+
+    orient = 12
+    pix_per_cell = 8
+    cell_per_block = 2
+    img = img.astype(np.float32)  # png file has value between 0 and 1
+    feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    feature_image_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    hog_features = []
+    for channel in range(feature_image.shape[2]):
+        hog_features.append(get_hog_features(feature_image[:, :, channel],
+                                             orient, pix_per_cell, cell_per_block,
+                                             vis=True, feature_vec=True))
+    hog_features.append(get_hog_features(feature_image_gray,
+                                         orient, pix_per_cell, cell_per_block,
+                                         vis=True, feature_vec=True))
+    return hog_features
+
 def extract_feature_batch(img_fnames):
+    """
+    extract feature vectors from all traning/test image
+    """
     batch_features = []
     for fname in img_fnames:
         img = mpimg.imread(fname)
@@ -91,6 +120,10 @@ def extract_feature_batch(img_fnames):
 
 
 def vehicle_classifier():
+    """
+    train the vehicle classifier and save.
+    load the saved model if it exists
+    """
     try:
         with open('classifier_model.p', 'rb') as f:
             data = pickle.load(f)
@@ -143,13 +176,17 @@ def draw_boxes(img, bboxes, color=(0, 0, 255), thick=6):
 
 
 def generate_heat_map(map_size, bbox_list, prob_list):
-    # Iterate through list of bboxes
+    """
+    generate heat map and probability map after performning slide window search.
+    heat map counts the number of times a region was recognized as vehicle with probability 0.7 or higher
+    probability map stores the maximum probability the region received in slide window search
+    """
     heatmap = np.zeros(map_size)
     probmap = np.zeros(map_size)
     for box, p in zip(bbox_list, prob_list):
         # Add += 1 for all pixels inside each bbox
         # Assuming each "box" takes the form ((x1, y1), (x2, y2))
-        if p > 0.5:
+        if p > 0.7:
             heatmap[box[0][1]:box[1][1], box[0][0]:box[1][0]] += 1
         y = probmap[box[0][1]:box[1][1], box[0][0]:box[1][0]]
         y[y < p] = p
@@ -170,7 +207,7 @@ def draw_labeled_bboxes(img, labels, probmap):
     for car_number in range(1, labels[1] + 1):
         # Find pixels with each car_number label value
         nonzero = (labels[0] == car_number).nonzero()
-        prob = probmap[labels[0] == car_number].mean()
+        prob = probmap[labels[0] == car_number].max()
         # Identify x and y values of those pixels
         if prob>0.9:
             nonzeroy = np.array(nonzero[0])
@@ -316,8 +353,8 @@ class car_tracker(object):
     def __init__(self, video=0):
         self.frame_ct = 0
         self.detected = False
-        self.search_scales = [0.75, 1.0, 1.5, 2.0]
-        self.decay_factor = 0.2
+        self.search_scales = [0.75, 1.0, 1.25, 1.5, 2.0]
+        self.decay_factor = 0.3
         self.heatmap_thresh = 1.0
         self.recent_heatmap = []
         self.recent_probmap = []
@@ -358,3 +395,12 @@ class car_tracker(object):
                 (1 - self.decay_factor) * self.recent_probmap[-1]
             self.recent_heatmap.append(np.copy(self.current_heatmap))
             self.recent_probmap.append(np.copy(self.current_probmap))
+
+if __name__ == "__main__":
+    clip = VideoFileClip('project_video.mp4')
+    clip = [frame for frame in clip.iter_frames()]
+    ct = car_tracker()
+    for img in tqdm(clip):
+        ct.detect_car_from_img(img)
+    gif_clip = ImageSequenceClip(ct.antn_img, fps=25)
+    gif_clip.write_videofile('video_output.mp4')
